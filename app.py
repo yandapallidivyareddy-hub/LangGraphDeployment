@@ -7,7 +7,6 @@ import asyncio
 from langchain_core.tools import tool
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
-from google.colab import userdata
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -29,7 +28,7 @@ try:
     # Try to get from environment first, then from userdata
     # FIXED: Ensured variable naming consistency to avoid NameError
     GOOGLE_API_KEY = os.environ.get("GOOGLE_APIKEY") or userdata.get('GOOGLE_APIKEY')
-    os.environ["GOOGLE_APIKEY"] = GOOGLE_API_KEY
+    GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 except Exception as e:
     print(f"Warning: Could not retrieve GOOGLE_APIKEY: {e}")
     GOOGLE_API_KEY = ""
