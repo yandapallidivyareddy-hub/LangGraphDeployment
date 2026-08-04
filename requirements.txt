@@ -4,6 +4,8 @@ langgraph
 langchain
 langchain-core
 langchain-google-genai
+langserve
 google-generativeai
 python-dotenv
 pydantic
+sse-starlette
