@@ -41,7 +41,7 @@ llm = ChatGoogleGenerativeAI(
 # STATE
 # ============================================================
 
-class CrewState(TypedDict, total=False):
+class CrewState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     code: Optional[str]
     execution_result: Optional[str]
@@ -161,7 +161,6 @@ def run_python_code(code: str) -> str:
 # ============================================================
 
 def developer(state: CrewState):
-
     task = state["messages"][-1].content
 
     prompt = f"""
@@ -171,29 +170,27 @@ Task:
 {task}
 
 Rules:
-
 - Return only executable Python code.
 - Do not explain anything.
 - Do not use markdown.
-- Do not wrap the code inside triple backticks.
-- Make sure the program produces visible output when appropriate.
+- Do not use triple backticks.
+- Do not include any text before or after the code.
 """
 
     response = llm.invoke(prompt)
 
-    generated_code = response.content
+    code = response.content
 
-    if isinstance(generated_code, list):
-        generated_code = "".join(
+    if isinstance(code, list):
+        code = "".join(
             item.get("text", "")
-            for item in generated_code
+            for item in code
             if isinstance(item, dict)
         )
 
     return {
-        "code": generated_code
+        "code": code.strip()
     }
-
 
 # ============================================================
 # TESTER NODE
@@ -245,10 +242,10 @@ class AgentInput(BaseModel):
     )
 
 
-# ============================================================
-# FORMAT INPUT
-# ============================================================
 
+# ============================================================
+# FORMAT OUTPUT
+# ============================================================
 def format_input(x):
 
     if isinstance(x, dict):
@@ -263,37 +260,14 @@ def format_input(x):
     }
 
 
-# ============================================================
-# FORMAT OUTPUT
-# ============================================================
-
-def format_output(state):
-
-    return {
-        "generated_code": state.get("code", ""),
-        "execution_result": state.get(
-            "execution_result",
-            ""
-        ),
-        "report": state.get(
-            "report",
-            ""
-        )
-    }
-
-
-# ============================================================
-# CREATE CHAIN
-# ============================================================
-
 chain = (
     RunnableLambda(format_input)
     | langgraph_app
-    | RunnableLambda(format_output)
 ).with_types(
     input_type=AgentInput
 )
-
+def format_output(state):
+    return state.get("code", "")
 
 # ============================================================
 # FASTAPI APPLICATION
