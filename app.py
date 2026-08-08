@@ -1,3 +1,4 @@
+
 import os
 import sys
 import io
@@ -33,7 +34,8 @@ if not GOOGLE_API_KEY:
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.5-flash",
-    google_api_key=GOOGLE_API_KEY
+    google_api_key=GOOGLE_API_KEY,
+    temperature=0
 )
 
 
@@ -96,7 +98,10 @@ def run_python_code(code: str) -> str:
 
     for item in forbidden:
         if item in clean_code:
-            return f"Execution blocked: use of '{item}' is not allowed."
+            return (
+                f"Execution blocked: "
+                f"use of '{item}' is not allowed."
+            )
 
     # --------------------------------------------------------
     # Capture stdout
@@ -108,6 +113,7 @@ def run_python_code(code: str) -> str:
     sys.stdout = new_stdout
 
     try:
+
         safe_builtins = {
             "print": print,
             "len": len,
@@ -161,6 +167,7 @@ def run_python_code(code: str) -> str:
 # ============================================================
 
 def developer(state: CrewState):
+
     task = state["messages"][-1].content
 
     prompt = f"""
@@ -170,18 +177,22 @@ Task:
 {task}
 
 Rules:
+
 - Return only executable Python code.
 - Do not explain anything.
 - Do not use markdown.
 - Do not use triple backticks.
-- Do not include any text before or after the code.
+- Do not include any text before the code.
+- Do not include any text after the code.
 """
 
     response = llm.invoke(prompt)
 
     code = response.content
 
+    # Handle Gemini structured content if returned as a list
     if isinstance(code, list):
+
         code = "".join(
             item.get("text", "")
             for item in code
@@ -191,6 +202,7 @@ Rules:
     return {
         "code": code.strip()
     }
+
 
 # ============================================================
 # TESTER NODE
@@ -237,15 +249,16 @@ langgraph_app = builder.compile()
 # ============================================================
 
 class AgentInput(BaseModel):
+
     task: str = Field(
         description="Python coding task"
     )
 
 
+# ============================================================
+# FORMAT INPUT
+# ============================================================
 
-# ============================================================
-# FORMAT OUTPUT
-# ============================================================
 def format_input(x):
 
     if isinstance(x, dict):
@@ -260,14 +273,27 @@ def format_input(x):
     }
 
 
+# ============================================================
+# FORMAT OUTPUT
+# ============================================================
+
+def format_output(state):
+
+    return state.get("code", "")
+
+
+# ============================================================
+# CREATE CHAIN
+# ============================================================
+
 chain = (
     RunnableLambda(format_input)
     | langgraph_app
+    | RunnableLambda(format_output)
 ).with_types(
     input_type=AgentInput
 )
-def format_output(state):
-    return state.get("code", "")
+
 
 # ============================================================
 # FASTAPI APPLICATION
@@ -319,3 +345,4 @@ if __name__ == "__main__":
         port=port,
         reload=False
     )
+
