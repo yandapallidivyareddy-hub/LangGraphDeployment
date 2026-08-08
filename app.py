@@ -20,9 +20,9 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
 
-# ======================================
+# ============================================================
 # GEMINI CONFIGURATION
-# ======================================
+# ============================================================
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
@@ -33,48 +33,114 @@ if not GOOGLE_API_KEY:
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.5-flash",
-    google_api_key=GOOGLE_API_KEY,
-    temperature=0
+    google_api_key=GOOGLE_API_KEY
 )
 
 
-# ======================================
+# ============================================================
 # STATE
-# ======================================
+# ============================================================
 
-class CrewState(TypedDict):
+class CrewState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     code: Optional[str]
+    execution_result: Optional[str]
     report: Optional[str]
 
 
-# ======================================
-# TOOL
-# ======================================
+# ============================================================
+# PYTHON CODE EXECUTION TOOL
+# ============================================================
 
 @tool
 def run_python_code(code: str) -> str:
     """
-    Execute Python code and return output.
+    Execute generated Python code and return the output.
     """
 
     if not isinstance(code, str):
         code = str(code)
 
     clean_code = (
-        code.replace("```python", "")
-            .replace("```", "")
-            .strip()
+        code
+        .replace("```python", "")
+        .replace("```", "")
+        .strip()
     )
+
+    # --------------------------------------------------------
+    # Basic safety restrictions
+    # --------------------------------------------------------
+
+    forbidden = [
+        "import os",
+        "import sys",
+        "import subprocess",
+        "import socket",
+        "import shutil",
+        "import pathlib",
+        "from os",
+        "from sys",
+        "from subprocess",
+        "open(",
+        "__import__",
+        "eval(",
+        "exec(",
+        "compile(",
+        "globals(",
+        "locals(",
+        "getattr(",
+        "setattr(",
+        "delattr(",
+    ]
+
+    for item in forbidden:
+        if item in clean_code:
+            return f"Execution blocked: use of '{item}' is not allowed."
+
+    # --------------------------------------------------------
+    # Capture stdout
+    # --------------------------------------------------------
 
     old_stdout = sys.stdout
     new_stdout = io.StringIO()
+
     sys.stdout = new_stdout
 
     try:
-        local_scope = {}
+        safe_builtins = {
+            "print": print,
+            "len": len,
+            "range": range,
+            "str": str,
+            "int": int,
+            "float": float,
+            "list": list,
+            "dict": dict,
+            "tuple": tuple,
+            "set": set,
+            "sum": sum,
+            "min": min,
+            "max": max,
+            "abs": abs,
+            "enumerate": enumerate,
+            "zip": zip,
+            "sorted": sorted,
+            "reversed": reversed,
+            "bool": bool,
+        }
 
-        exec(clean_code, {}, local_scope)
+        safe_globals = {
+            "__builtins__": safe_builtins
+        }
+
+        safe_locals = {}
+
+        exec(
+            clean_code,
+            safe_globals,
+            safe_locals
+        )
 
         result = new_stdout.getvalue()
 
@@ -84,12 +150,15 @@ def run_python_code(code: str) -> str:
     finally:
         sys.stdout = old_stdout
 
-    return result if result else "Success (No Output)"
+    if result.strip():
+        return result.strip()
+
+    return "Code executed successfully with no output."
 
 
-# ======================================
+# ============================================================
 # DEVELOPER NODE
-# ======================================
+# ============================================================
 
 def developer(state: CrewState):
 
@@ -107,43 +176,52 @@ Rules:
 - Do not explain anything.
 - Do not use markdown.
 - Do not wrap the code inside triple backticks.
+- Make sure the program produces visible output when appropriate.
 """
 
     response = llm.invoke(prompt)
 
+    generated_code = response.content
+
+    if isinstance(generated_code, list):
+        generated_code = "".join(
+            item.get("text", "")
+            for item in generated_code
+            if isinstance(item, dict)
+        )
+
     return {
-        "code": response.content
+        "code": generated_code
     }
-# ======================================
+
+
+# ============================================================
 # TESTER NODE
-# ======================================
+# ============================================================
 
 def tester(state: CrewState):
 
-    code = state["code"]
+    code = state.get("code", "")
 
     execution_result = run_python_code.invoke(
         {"code": code}
     )
 
-    report = f"""
-Generated Successfully
-
-==============================
-Execution Result
-==============================
-
-{execution_result}
-"""
+    report = (
+        "Generated Successfully\n\n"
+        "Execution Result:\n"
+        f"{execution_result}"
+    )
 
     return {
+        "execution_result": execution_result,
         "report": report
     }
 
 
-# ======================================
+# ============================================================
 # BUILD LANGGRAPH
-# ======================================
+# ============================================================
 
 builder = StateGraph(CrewState)
 
@@ -157,9 +235,9 @@ builder.add_edge("tester", END)
 langgraph_app = builder.compile()
 
 
-# ======================================
+# ============================================================
 # INPUT MODEL
-# ======================================
+# ============================================================
 
 class AgentInput(BaseModel):
     task: str = Field(
@@ -167,13 +245,16 @@ class AgentInput(BaseModel):
     )
 
 
-# ======================================
+# ============================================================
 # FORMAT INPUT
-# ======================================
+# ============================================================
 
 def format_input(x):
 
-    task = x["task"] if isinstance(x, dict) else x.task
+    if isinstance(x, dict):
+        task = x["task"]
+    else:
+        task = x.task
 
     return {
         "messages": [
@@ -182,21 +263,28 @@ def format_input(x):
     }
 
 
-# ======================================
+# ============================================================
 # FORMAT OUTPUT
-# ======================================
+# ============================================================
 
 def format_output(state):
 
     return {
-        "generated_code": state.get("code"),
-        "report": state.get("report")
+        "generated_code": state.get("code", ""),
+        "execution_result": state.get(
+            "execution_result",
+            ""
+        ),
+        "report": state.get(
+            "report",
+            ""
+        )
     }
 
 
-# ======================================
+# ============================================================
 # CREATE CHAIN
-# ======================================
+# ============================================================
 
 chain = (
     RunnableLambda(format_input)
@@ -205,9 +293,11 @@ chain = (
 ).with_types(
     input_type=AgentInput
 )
-# ======================================
+
+
+# ============================================================
 # FASTAPI APPLICATION
-# ======================================
+# ============================================================
 
 app = FastAPI(
     title="LangGraph Coding Agent",
@@ -215,20 +305,21 @@ app = FastAPI(
 )
 
 
-# ======================================
+# ============================================================
 # HEALTH CHECK
-# ======================================
+# ============================================================
 
 @app.get("/")
 def health_check():
+
     return {
         "status": "LangGraph Coding Agent is running"
     }
 
 
-# ======================================
+# ============================================================
 # LANGSERVE ROUTES
-# ======================================
+# ============================================================
 
 add_routes(
     app,
@@ -238,13 +329,15 @@ add_routes(
 )
 
 
-# ======================================
+# ============================================================
 # MAIN
-# ======================================
+# ============================================================
 
 if __name__ == "__main__":
 
-    port = int(os.environ.get("PORT", 8000))
+    port = int(
+        os.environ.get("PORT", 8000)
+    )
 
     uvicorn.run(
         "app:app",
